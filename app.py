@@ -5,8 +5,10 @@ Run with: python app.py
 Then visit: http://localhost:5000
 """
 
+import io
 import re
 
+import pdfplumber
 from flask import Flask, render_template, request, jsonify
 
 from chatbot import Chatbot
@@ -19,11 +21,24 @@ def _parse_transcript(content):
     """Parse course codes from transcript text.
 
     Matches patterns like 'CMSC 14100', 'MATH 15300', etc.
+    Handles both compact ('CMSC 14200') and split ('ECON    10000') formats.
     Returns a sorted list of unique course code strings.
     """
-    matches = re.findall(r'\b([A-Z]{2,5})\s*(\d{5})\b', content)
+    matches = re.findall(r'\b([A-Z]{2,5})\s+(\d{5})\b', content)
     codes = sorted(set(f"{dept} {num}" for dept, num in matches))
     return codes
+
+
+def _extract_pdf_text(file_storage):
+    """Extract text from a PDF file upload using pdfplumber."""
+    file_bytes = file_storage.read()
+    text_parts = []
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        for page in pdf.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text_parts.append(page_text)
+    return "\n".join(text_parts)
 
 
 @app.route("/")
@@ -52,14 +67,20 @@ def upload_transcript():
     if not file.filename:
         return jsonify({"error": "No file selected"}), 400
 
-    # Only allow .txt and .csv files
-    if not file.filename.lower().endswith((".txt", ".csv")):
-        return jsonify({"error": "Only .txt and .csv files are supported"}), 400
+    # Only allow .txt, .csv, and .pdf files
+    filename_lower = file.filename.lower()
+    if not filename_lower.endswith((".txt", ".csv", ".pdf")):
+        return jsonify({"error": "Only .txt, .csv, and .pdf files are supported"}), 400
 
     try:
-        content = file.read().decode("utf-8")
+        if filename_lower.endswith(".pdf"):
+            content = _extract_pdf_text(file)
+        else:
+            content = file.read().decode("utf-8")
     except UnicodeDecodeError:
         return jsonify({"error": "Could not read file — ensure it is a text file"}), 400
+    except Exception as e:
+        return jsonify({"error": f"Could not read PDF: {e}"}), 400
 
     codes = _parse_transcript(content)
     if not codes:
