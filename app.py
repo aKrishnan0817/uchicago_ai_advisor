@@ -18,15 +18,75 @@ bot = Chatbot()
 
 
 def _parse_transcript(content):
-    """Parse course codes from transcript text.
+    """Parse course codes and their statuses from transcript text.
 
-    Matches patterns like 'CMSC 14100', 'MATH 15300', etc.
-    Handles both compact ('CMSC 14200') and split ('ECON    10000') formats.
-    Returns a sorted list of unique course code strings.
+    Attempts to distinguish completed courses (have a letter grade) from
+    in-progress courses (marked 'In Progress' or no grade).
+
+    Returns dict: {"completed": [...codes], "in_progress": [...codes]}
     """
-    matches = re.findall(r'\b([A-Z]{2,5})\s+(\d{5})\b', content)
-    codes = sorted(set(f"{dept} {num}" for dept, num in matches))
-    return codes
+    completed = set()
+    in_progress = set()
+
+    # Try structured parsing: lines with course code + grade info
+    # Typical format: DEPT NNNNN ... (grade or 'In Progress or N/A')
+    # Match course code at start, then look for grade at end of line
+    structured_pattern = re.compile(
+        r'\b([A-Z]{2,5})\s+(\d{5})\b'
+    )
+
+    lines = content.split('\n')
+    has_grade_info = False
+
+    for line in lines:
+        code_match = structured_pattern.search(line)
+        if not code_match:
+            continue
+
+        code = f"{code_match.group(1)} {code_match.group(2)}"
+
+        # Check for grade indicators in the same line
+        line_after_code = line[code_match.end():]
+
+        if re.search(r'\bIn\s+Progress\b', line_after_code, re.IGNORECASE):
+            in_progress.add(code)
+            has_grade_info = True
+        elif re.search(r'\bN/?A\b', line_after_code, re.IGNORECASE):
+            in_progress.add(code)
+            has_grade_info = True
+        elif re.search(r'\b[A-D][+-]?\b', line_after_code) or re.search(r'\b[PS]\b', line_after_code):
+            # Letter grade (A+, A, A-, B+, B, B-, C+, C, C-, D, P, S)
+            completed.add(code)
+            has_grade_info = True
+        elif re.search(r'\bW\b', line_after_code):
+            # Withdrawn — don't count
+            has_grade_info = True
+        else:
+            # Code found but no grade info on this line
+            in_progress.add(code)
+
+    # If we never found any grade info, fall back to marking all as completed
+    # (plain text file with just course codes)
+    if not has_grade_info and (completed or in_progress):
+        all_codes = completed | in_progress
+        return {
+            "completed": sorted(all_codes),
+            "in_progress": [],
+        }
+
+    # If nothing was found at all via structured parsing, try simple extraction
+    if not completed and not in_progress:
+        matches = re.findall(r'\b([A-Z]{2,5})\s+(\d{5})\b', content)
+        codes = sorted(set(f"{dept} {num}" for dept, num in matches))
+        return {
+            "completed": codes,
+            "in_progress": [],
+        }
+
+    return {
+        "completed": sorted(completed),
+        "in_progress": sorted(in_progress),
+    }
 
 
 def _extract_pdf_text(file_storage):
@@ -59,7 +119,7 @@ def status():
 
 @app.route("/upload-transcript", methods=["POST"])
 def upload_transcript():
-    """Receive a transcript file, parse course codes, and return them."""
+    """Receive a transcript file, parse course codes with status, and return them."""
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"}), 400
 
@@ -82,11 +142,12 @@ def upload_transcript():
     except Exception as e:
         return jsonify({"error": f"Could not read PDF: {e}"}), 400
 
-    codes = _parse_transcript(content)
-    if not codes:
+    result = _parse_transcript(content)
+
+    if not result["completed"] and not result["in_progress"]:
         return jsonify({"error": "No course codes found. Expected format: DEPT NNNNN (e.g., CMSC 14100)"}), 400
 
-    return jsonify({"courses": codes})
+    return jsonify(result)
 
 
 @app.route("/chat", methods=["POST"])
@@ -102,12 +163,14 @@ def chat():
     # Conversation history from the frontend (list of {role, content} dicts)
     history = data.get("history", [])
     completed_courses = data.get("completed_courses", [])
+    in_progress_courses = data.get("in_progress_courses", [])
 
     try:
         reply = bot.chat(
             message,
             conversation_history=history,
             completed_courses=completed_courses,
+            in_progress_courses=in_progress_courses,
         )
         return jsonify({"reply": reply})
     except Exception as e:

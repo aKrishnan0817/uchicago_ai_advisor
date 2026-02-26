@@ -81,6 +81,7 @@
 
         let history = [];
         let completedCourses = [];
+        let inProgressCourses = [];
 
         // --- Markdown rendering ---
         function renderMarkdown(text) {
@@ -196,13 +197,22 @@
                     transcriptBadge.textContent = 'Upload failed';
                     addMessage('assistant', `Could not parse transcript: ${data.error}`);
                 } else {
-                    completedCourses = data.courses;
-                    transcriptBadge.textContent = `${completedCourses.length} courses from transcript`;
+                    completedCourses = data.completed || [];
+                    inProgressCourses = data.in_progress || [];
+                    const total = completedCourses.length + inProgressCourses.length;
+                    transcriptBadge.textContent = `${completedCourses.length} completed, ${inProgressCourses.length} in-progress`;
                     transcriptBadge.classList.add('uploaded');
                     uploadZone.classList.add('hidden');
-                    addMessage('assistant',
-                        `Transcript uploaded! I found **${completedCourses.length} courses**: ${completedCourses.join(', ')}.\n\nI'll reference these when advising you. Ask me what you should take next!`
-                    );
+
+                    let msg = `Transcript uploaded! I found **${total} courses**:\n\n`;
+                    if (completedCourses.length) {
+                        msg += `**Completed (${completedCourses.length}):** ${completedCourses.join(', ')}\n\n`;
+                    }
+                    if (inProgressCourses.length) {
+                        msg += `**In Progress (${inProgressCourses.length}):** ${inProgressCourses.join(', ')}\n\n`;
+                    }
+                    msg += `I'll reference these when advising you. Ask me what you should take next!`;
+                    addMessage('assistant', msg);
                 }
             } catch (err) {
                 transcriptBadge.textContent = 'Upload failed';
@@ -231,6 +241,7 @@
                         message,
                         history,
                         completed_courses: completedCourses,
+                        in_progress_courses: inProgressCourses,
                     }),
                 });
                 const data = await resp.json();
